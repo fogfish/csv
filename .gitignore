@@ -8,7 +8,7 @@
 *.tgz
 *.conf
 *.gnuweb
-priv/*.txt
+priv/set-*.txt
 ebin/
 Makefile
 autom4te.cache/
