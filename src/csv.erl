@@ -14,9 +14,28 @@
 %%    limitations under the License
 %%
 %% @description
-%%    csv file parser
+%%    The simple CSV-file parser based on event model. The parser generates an
+%%    event/callback when the CSV line is parsed. The parser supports both
+%%    sequential and parallel parsing.
+%%
+%%                           Acc
+%%                       +--------+
+%%                       |        |
+%%                       V        |
+%%                  +---------+   |
+%%    ----Input---->| Parser  |--------> AccN
+%%          +       +---------+
+%%         Acc0          |
+%%                       V
+%%                   Event Line 
+%%
+%%    The parser takes as input binary stream, event handler function and
+%%    initial state/accumulator. Event function is evaluated agains current 
+%%    accumulator and parsed line of csv-file. Note: The accumaltor allows to
+%%    carry-on application specific state throught event functions.
+%%
 -module(csv).
-
+-author("Dmitry Kolesnikov <dmkolesnikov@gmail.com>").
 -export([parse/3, split/4, pparse/4]).
 
 %%
@@ -25,69 +44,85 @@
 -define(LINE_BY, $\n).
 
 %%
-%% parse(In, Fun, App) -> NApp
-%%   In  = binary(), input data to parse
-%%   Fun = Fun({Event, Line}, App), parser event handler
-%%      Event - atom() line | eof
-%%      Line  - list() list of fields
-%%      App   - internal application state
+%% parse(In, Fun, Acc0) -> Acc
+%%   In  = binary(), input csv data to parse
+%%   Fun = fun({line, Line}, Acc0) -> Acc, 
+%%      Line  - list() list of parsed fields in reverse order
+%%   Acc0 = term() application specific state/term carried throught
+%%                 parser event hadlers
 %%
 %% sequentially parses csv file
 %%
-parse(In, Fun, App) ->
-   parse(In, 0, 0, [], Fun, App).
+parse(In, Fun, Acc0) ->
+   parse(In, 0, 0, [], Fun, Acc0).
 
-parse(In, Pos, Len, Acc, Fun, App) when Pos + Len < size(In) ->
+parse(In, Pos, Len, Line, Fun, Acc0) when Pos + Len < size(In) ->
    case In of
       <<_:Pos/binary, Tkn:Len/binary, ?FIELD_BY,  _/binary>> ->
          % field match
-         parse(In, Pos + Len + 1, 0, [Tkn | Acc], Fun, App);
+         parse(In, Pos + Len + 1, 0, [Tkn | Line], Fun, Acc0);
       <<_:Pos/binary, Tkn:Len/binary, ?LINE_BY>> ->
          % last line match
-         Fun({line, [Tkn | Acc]}, App);
+         Fun({line, [Tkn | Line]}, Acc0);
       <<_:Pos/binary, Tkn:Len/binary, ?LINE_BY, _/binary>> ->
          % line match
-         NApp = Fun({line, [Tkn | Acc]}, App),
-         parse(In, Pos + Len + 1, 0, [], Fun, NApp);
+         parse(In, Pos + Len + 1, 0, [], Fun, Fun({line, [Tkn | Line]}, Acc0));
       _ ->
          % no match increase token
-         parse(In, Pos, Len + 1, Acc, Fun, App)
+         parse(In, Pos, Len + 1, Line, Fun, Acc0)
    end;
-parse(In, Pos, Len, Acc, Fun, App) ->
+parse(In, Pos, Len, Line, Fun, Acc0) ->
    <<_:Pos/binary, Tkn:Len/binary, _/binary>> = In,
-   Fun({line, [Tkn | Acc]}, App).
+   Fun({line, [Tkn | Line]}, Acc0).
   
 %%
-%% split(In, Count, Fun, App) -> NApp
+%% split(In, Count, Fun, Acc0) -> Acc0
+%%    In    = binary(), input csv data to split
+%%    Count = integer(), number of shard to produce
+%%    Fun = fun({shard, Shard}, Acc0) -> Acc, 
+%%       Shard  - binary() chunk of csv data
+%%    Acc0 = term() application specific state/term carried throught
+%%                  parser event hadlers
 %%
-%% split csv file on chunks, the count defines number of chunks
-split(In, Count, Fun, App) ->
+%% split csv file on chunks
+%%
+split(In, Count, Fun, Acc0) ->
    Size = erlang:round(size(In) / Count), % approximate a shard size
-   split(In, 0, Size, Size, Fun, App).
+   split(In, 0, Size, Size, Fun, Acc0).
  
-split(In, Pos, Size, Size0, Fun, App) when Pos + Size < size(In) ->
+split(In, Pos, Size, Size0, Fun, Acc0) when Pos + Size < size(In) ->
    case In of
       <<_:Pos/binary, Shard:Size/binary, ?LINE_BY>> ->
-         Fun({shard, Shard}, App);
+         Fun({shard, Shard}, Acc0);
       <<_:Pos/binary, Shard:Size/binary, ?LINE_BY, _/binary>> ->
-         NApp = Fun({shard, Shard}, App),
-         split(In, Pos + Size + 1, Size0,    Size0, Fun, NApp);
+         split(In, Pos + Size + 1, Size0,    Size0, Fun, 
+            Fun({shard, Shard}, Acc0)
+         );
       _ ->
-         split(In, Pos,            Size + 1, Size0, Fun, App)
+         split(In, Pos, Size + 1, Size0, Fun, Acc0)
    end;
-split(In, Pos, _Size, _Size0, Fun, App) ->
+split(In, Pos, _Size, _Size0, Fun, Acc0) ->
    <<_:Pos/binary, Shard/binary>> = In,
-   Fun({shard, Shard}, App).
+   Fun({shard, Shard}, Acc0).
 
 %%
 %% pparse(In, Count, Fun, App) -> NApp
+%%   In    = binary(), input csv data to parse
+%%   Count = integers(), defines a number of worker processes
+%%   Fun   = fun({line, Line}, Acc0) -> Acc, 
+%%      Line  - list() list of parsed fields in reverse order
+%%   Acc0 = term() application specific state/term carried throught
+%%                 parser event hadlers
 %%
-pparse(In, Count, Fun, App) ->   
+%% parallel parse csv file, the function shards the input csv data and
+%% parses each chunk in own process.
+%%
+pparse(In, Count, Fun, Acc0) ->   
    Wrk = fun({shard, Shard}, Id) ->
       Pid = self(),
       spawn(
          fun() ->
-            R = parse(Shard, Fun, App),
+            R = parse(Shard, Fun, Acc0),
             Pid ! {shard, Id, R}
          end
       ),
@@ -99,6 +134,7 @@ pparse(In, Count, Fun, App) ->
    
 join([H | T], Acc) ->
    receive 
+      {shard, H, R} when is_list(R) -> join(T, Acc ++ R);
       {shard, H, R} -> join(T, [R|Acc])
    end;
 join([], Acc) ->

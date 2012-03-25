@@ -17,24 +17,32 @@
 %%    csv file parser example
 -module(csv_example).
 
--export([run/2]).
+-export([parse/2, import/2]).
 
-
-run(Filename, Wrk) ->
-   Cnt = fun(_, X) -> X + 1 end,
+%%
+%% parses a file, event function does nothing exept line counter
+parse(Filename, Wrk) ->
+   Cnt = fun({line, _}, X) -> X + 1 end,
    T1 = epoch(),
    {ok, Bin} = file:read_file(Filename),
    T2 = epoch(),
    R  = csv:pparse(Bin, Wrk, Cnt, 0),
    T3 = epoch(),
    L  = lists:foldl(fun(X, A) -> A + X end, 0, R),
-   {
-      {lines,         L},
-      {size,  size(Bin)},
-      {read_ms,  (T2 - T1) / 1000},
-      {parse_ms, (T3 - T2) / 1000},
-      {line_us,  (T3 - T2) / L}
-   }.
+   io:format("lines: ~b~nsize (MB): ~f~nread (ms): ~f~nparse (ms): ~f~nper line (us): ~f~n", [L, (size(Bin) / (1024 * 1024)), ((T2 - T1) / 1000), ((T3 - T2) / 1000), ((T3 - T2) / L)]).
+   
+%%
+%% parses and imports a csv file into ets table
+import(Filename, Wrk) ->
+   Ets = ets:new(noname, [public, ordered_set, {write_concurrency, true}]),
+   T1  = epoch(),
+   {ok, Bin} = file:read_file(Filename),
+   T2  = epoch(),
+   csv:pparse(Bin, Wrk, fun csv_util:import/2, {ets, Ets}),
+   T3  = epoch(),
+   io:format("size (MB): ~f~nread (ms): ~f~nparse (ms): ~f~n", [(size(Bin) / (1024 * 1024)), ((T2 - T1) / 1000), ((T3 - T2) / 1000)]),
+   Ets.
+   
    
 epoch() ->
    {Mega, Sec, Micro} = erlang:now(),
