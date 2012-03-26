@@ -17,33 +17,137 @@
 %%    csv file parser example
 -module(csv_example).
 
--export([parse/2, import/2]).
+-export([run/1, extract/2, transform_hash/2, transform_tuple/2, load_ets/2, load_pts/2]).
+
+-define(SET, ["priv/set-300K-8.txt","priv/set-300K-24.txt", "priv/set-300K-40.txt"]).
+
+run(N) ->
+   lists:foreach(fun(X) -> extract(X, N) end, ?SET),
+   lists:foreach(fun(X) -> transform_hash(X, N) end, ?SET),
+   lists:foreach(fun(X) -> transform_tuple(X, N) end, ?SET),
+   lists:foreach(fun(X) -> load_ets(X, N) end, ?SET),
+   lists:foreach(fun(X) -> load_pts(X, N) end, ?SET).
 
 %%
-%% parses a file, event function does nothing exept line counter
-parse(Filename, Wrk) ->
-   Cnt = fun({line, _}, X) -> X + 1 end,
-   T1 = epoch(),
-   {ok, Bin} = file:read_file(Filename),
-   T2 = epoch(),
-   R  = csv:pparse(Bin, Wrk, Cnt, 0),
-   T3 = epoch(),
+%% validates performance of extract=parse operation
+%% parser event function does not do anything else, except line counting
+extract(Filename, N) ->
+   %% event function, line counter
+   Evt = fun({line, _Line}, X) -> X + 1 end,
+   {Tread, {ok, Bin}} = timer:tc(file, read_file, [Filename]),
+   {Textr, R}         = timer:tc(csv, pparse, [Bin, N, Evt, 0]),
    L  = lists:foldl(fun(X, A) -> A + X end, 0, R),
-   io:format("lines: ~b~nsize (MB): ~f~nread (ms): ~f~nparse (ms): ~f~nper line (us): ~f~n", [L, (size(Bin) / (1024 * 1024)), ((T2 - T1) / 1000), ((T3 - T2) / 1000), ((T3 - T2) / L)]).
+   error_logger:info_report([
+      extract,
+      {file,         Filename},
+      {lines,               L},
+      {size_MB,     size(Bin) / (1024 * 1024)},
+      {read_ms,     Tread / 1000},
+      {parse_ms,    Textr / 1000},
+      {per_line_us, Textr / L}
+   ]).
+  
+%%
+%% validate performance of extract and transform operation
+%% parser event function calculates a rolling hash of each parsed line
+transform_hash(Filename, N) ->
+   %% event function, line counter
+   Evt = fun({line, Line}, X) -> erlang:phash2({X, Line}) end,
+   {Tread, {ok, Bin}} = timer:tc(file, read_file, [Filename]),
+   {Textr, R}         = timer:tc(csv, pparse, [Bin, N, Evt, 0]),
+   H  = lists:foldl(fun(X, A) -> erlang:phash2({A, X}) end, 0, R),
+   error_logger:info_report([
+      {transform,        hash},
+      {file,         Filename},
+      {hash,               H},
+      {size_MB,     size(Bin) / (1024 * 1024)},
+      {read_ms,     Tread / 1000},
+      {parse_ms,    Textr / 1000},
+      {per_line_us, Textr / 300000}
+   ]).
    
 %%
-%% parses and imports a csv file into ets table
-import(Filename, Wrk) ->
-   Ets = ets:new(noname, [public, ordered_set, {write_concurrency, true}]),
-   T1  = epoch(),
-   {ok, Bin} = file:read_file(Filename),
-   T2  = epoch(),
-   csv:pparse(Bin, Wrk, fun csv_util:import/2, {ets, Ets}),
-   T3  = epoch(),
-   io:format("size (MB): ~f~nread (ms): ~f~nparse (ms): ~f~n", [(size(Bin) / (1024 * 1024)), ((T2 - T1) / 1000), ((T3 - T2) / 1000)]),
-   Ets.
+%% validate performance of extract and transform operation
+%% parser event function calculates a rolling hash of each parsed line
+transform_tuple(Filename, N) ->
+   %% event function, line counter
+   Evt = fun({line, Line}, X) -> 
+      T = list_to_tuple(lists:reverse(Line)),
+      X + 1 
+   end,
+   {Tread, {ok, Bin}} = timer:tc(file, read_file, [Filename]),
+   {Textr, R}         = timer:tc(csv, pparse, [Bin, N, Evt, 0]),
+   L  = lists:foldl(fun(X, A) -> A + X end, 0, R),
+   error_logger:info_report([
+      {transform,       tuple},
+      {file,         Filename},
+      {size_MB,     size(Bin) / (1024 * 1024)},
+      {read_ms,     Tread / 1000},
+      {parse_ms,    Textr / 1000},
+      {per_line_us, Textr / L}
+   ]).   
+   
+%%
+%% parses and imports a csv file, transforms each line into tuple and 
+%% load data into ets table
+load_ets(Filename, N) ->
+   T = list_to_atom(Filename),
+   ets:new(T, [public, named_table, {write_concurrency, true}]),
+   {Tread, {ok, Bin}} = timer:tc(file, read_file, [Filename]),
+   {Textr, R}         = timer:tc(csv, pparse, [
+      Bin, N, fun csv_util:import/2, {ets, T}
+   ]),
+   error_logger:info_report([
+      {load,        ets},
+      {file,        Filename},
+      {size_MB,     size(Bin) / (1024 * 1024)},
+      {read_ms,     Tread / 1000},
+      {parse_ms,    Textr / 1000},
+      {per_line_us, Textr / 300000}
+   ]), 
+   ets:delete(T).
+
+   
+%%
+%% parses and imports a csv file, transforms each line into tuple and 
+%% load data into process term storage
+load_pts(Filename, N) ->
+   % spawn process term storage
+   Pts = list_to_tuple(
+      lists:map(
+         fun(_) -> spawn(fun() -> pts([]) end) end,
+         lists:seq(1,N)
+      )
+   ),
+   % event function 
+   Evt = fun({line, Line}, X) -> 
+      T   = list_to_tuple(lists:reverse(Line)),
+      Key = (erlang:phash2(erlang:element(1, T)) rem (N - 1)) + 1,
+      %io:format('~p~n', [Key]),
+      erlang:send(erlang:element(Key, Pts), {put, T}),
+      X + 1 
+   end,
+   {Tread, {ok, Bin}} = timer:tc(file, read_file, [Filename]),
+   {Textr, R}         = timer:tc(csv, pparse, [Bin, N, Evt, 0]),
+   L  = lists:foldl(fun(X, A) -> A + X end, 0, R),
+   error_logger:info_report([
+      {load,        pts},
+      {file,        Filename},
+      {size_MB,     size(Bin) / (1024 * 1024)},
+      {read_ms,     Tread / 1000},
+      {parse_ms,    Textr / 1000},
+      {per_line_us, Textr / L}
+   ]),
+   lists:map(
+      fun(X) -> erlang:send(X, shutdown) end,
+      tuple_to_list(Pts)
+   ).   
    
    
-epoch() ->
-   {Mega, Sec, Micro} = erlang:now(),
-   (Mega * 1000000 + Sec) * 1000000 + Micro.         
+pts(S) ->
+   receive
+      {put, T} -> pts([T | S]);
+      {get, P} -> P ! S, pts(S);
+      shutdown -> ok
+   end.
+   
