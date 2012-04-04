@@ -40,8 +40,9 @@
 
 %%
 %%
--define(FIELD_BY, $,).
--define(LINE_BY, $\n).
+-define(QUOTE,     $").
+-define(FIELD_BY,  $,).
+-define(LINE_BY,   $\n).
 
 %%
 %% parse(In, Fun, Acc0) -> Acc
@@ -58,23 +59,58 @@ parse(In, Fun, Acc0) ->
 
 parse(In, Pos, Len, Line, Fun, Acc0) when Pos + Len < size(In) ->
    case In of
+      <<_:Pos/binary, _Tkn:Len/binary, ?QUOTE, _/binary>> ->
+         % start field
+         parse_quoted(In, Pos + Len + 1, 0, Line, Fun, Acc0);
       <<_:Pos/binary, Tkn:Len/binary, ?FIELD_BY,  _/binary>> ->
          % field match
          parse(In, Pos + Len + 1, 0, [Tkn | Line], Fun, Acc0);
       <<_:Pos/binary, Tkn:Len/binary, ?LINE_BY>> ->
          % last line match
-         Fun({line, [Tkn | Line]}, Acc0);
-      <<_:Pos/binary, Tkn:Len/binary, ?LINE_BY, _/binary>> ->
+         Fun(eof, Fun({line, [Tkn | Line]}, Acc0));
+      <<_:Pos/binary, Tkn:Len/binary, ?LINE_BY, _/binary>>  ->
          % line match
-         parse(In, Pos + Len + 1, 0, [], Fun, Fun({line, [Tkn | Line]}, Acc0));
+         parse(In, Pos + Len + 1, 0, [], 
+               Fun, Fun({line, [Tkn | Line]}, Acc0));
       _ ->
          % no match increase token
          parse(In, Pos, Len + 1, Line, Fun, Acc0)
    end;
 parse(In, Pos, Len, Line, Fun, Acc0) ->
    <<_:Pos/binary, Tkn:Len/binary, _/binary>> = In,
-   Fun({line, [Tkn | Line]}, Acc0).
+   Fun(eof, Fun({line, [Tkn | Line]}, Acc0)).
   
+parse_quoted(In, Pos, Len, Line, Fun, Acc0) ->
+   case In of
+      <<_:Pos/binary, Tkn:Len/binary, ?QUOTE, ?QUOTE, _/binary>> ->
+         parse_quoted(In, Pos, Len + 2, Line, Fun, Acc0);
+      <<_:Pos/binary, Tkn:Len/binary, ?QUOTE, ?FIELD_BY, _/binary>> ->
+         % field match
+         parse(In, Pos + Len + 2, 0, [unescape(Tkn) | Line], Fun, Acc0);
+      <<_:Pos/binary, Tkn:Len/binary, ?QUOTE, ?LINE_BY, _/binary>> ->
+         % field match
+         parse(In, Pos + Len + 2, 0, [], Fun, 
+               Fun({line, [unescape(Tkn) | Line]}, Acc0));   
+      _ ->   
+         parse_quoted(In, Pos, Len + 1, Line, Fun, Acc0)
+   end.   
+         
+%%
+%% unescape
+unescape(In) ->
+   unescape(In, 0, 0, <<>>).
+   
+unescape(In, I, Len, Acc) when I + Len < size(In) ->
+   case In of
+      <<_:I/binary, Tkn:Len/binary, ?QUOTE, ?QUOTE, _/binary>> ->
+         unescape(In, I + Len + 2, 0, <<Acc/binary, Tkn/binary, ?QUOTE>>);
+      _ ->
+         unescape(In, I, Len + 1, Acc)
+   end;
+unescape(In, I, Len, Acc) ->
+   <<_:I/binary, Tkn:Len/binary>> = In,
+   <<Acc/binary, Tkn/binary>>.      
+   
 %%
 %% split(In, Count, Fun, Acc0) -> Acc0
 %%    In    = binary(), input csv data to split
@@ -122,7 +158,8 @@ pparse(In, Count, Fun, Acc0) ->
       Pid = self(),
       spawn(
          fun() ->
-            R = parse(Shard, Fun, Acc0),
+            
+            R = parse(Shard, Fun, Fun({shard, Shard}, Acc0)),
             Pid ! {shard, Id, R}
          end
       ),

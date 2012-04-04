@@ -18,6 +18,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(CSV, <<"a,b,c\n1,2,3\nd,e,f\n4,5,6\n">>).
+-define(QCSV, <<"\"a\",\"b\",\"c\"\n\"1\",\"2\",\"3\"\n">>).
+
 
 parse_test() ->
    Fun = fun({line, X}, A) -> [lists:reverse(X) | A] end,
@@ -26,6 +28,13 @@ parse_test() ->
    ?assert(lists:member([<<"1">>, <<"2">>, <<"3">>], Acc)),
    ?assert(lists:member([<<"d">>, <<"e">>, <<"f">>], Acc)),
    ?assert(lists:member([<<"4">>, <<"5">>, <<"6">>], Acc)).
+   
+parse_quoted_test() ->
+   Fun = fun({line, X}, A) -> [lists:reverse(X) | A] end,
+   Acc = csv:parse(?QCSV, Fun, []),
+   error_logger:error_report([{a, Acc}]),
+   ?assert(lists:member([<<"a">>, <<"b">>, <<"c">>], Acc)),
+   ?assert(lists:member([<<"1">>, <<"2">>, <<"3">>], Acc)).
    
 pparse_test() ->
    Fun = fun({line, X}, A) -> [lists:reverse(X) | A] end,

@@ -39,5 +39,8 @@ priv/set-%:
 	t=`echo "$@" | sed -n -e 's|.*-[0-9]*K-\(.*\)\..*|\1|p'`; \
 	$(PERL) priv/gen_set.pl $$n $$t > $@
 
+smp:
+	$(ERL) -pa ./ebin -pa ../*/ebin -pa ./priv -pa ../*/priv -smp +A 1024 +h 10240 
+
 @MAKE_GNUWEB@
 
