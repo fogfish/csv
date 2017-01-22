@@ -11,7 +11,15 @@ distribute and modify the documentation.
 it under the terms of the the 3-clause BSD License (the "License");
 as published by http://www.opensource.org/licenses/BSD-3-Clause.
 
-
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                                                                   !!!
+!!!                            WARNING                                !!!
+!!!                 The library is not supported.                     !!!
+!!!        Use CSV feature of https://github.com/fogfish/feta         !!!
+!!!                                                                   !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+      
+      
 Introduction
 ============
 
